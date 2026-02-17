@@ -3,7 +3,6 @@ import google.generativeai as genai
 import PyPDF2
 from io import BytesIO
 import pandas as pd
-from datetime import datetime
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="CORTEX: Deep Learning", layout="wide", page_icon="🧠")
@@ -11,11 +10,17 @@ st.set_page_config(page_title="CORTEX: Deep Learning", layout="wide", page_icon=
 # --- BARRA LATERAL (CONFIGURACIÓN) ---
 with st.sidebar:
     st.image("https://img.icons8.com/clouds/200/brain.png", width=100)
-    st.title("CORTEX v1.0")
+    st.title("CORTEX v1.1")
     st.caption("Tu Segundo Cerebro")
     
-    # Aquí pedimos la clave para que no tengas que editar código
-    api_key = st.text_input("🔑 Tu API Key de Google", type="password")
+    # --- CAMBIO IMPORTANTE AQUÍ ---
+    # Intentamos buscar la clave en los Secretos de Streamlit
+    if "GOOGLE_API_KEY" in st.secrets:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+        st.success("✅ Llave de seguridad detectada automáticamente.")
+    else:
+        # Si no está en secretos, la pedimos manual (Plan B)
+        api_key = st.text_input("🔑 Tu API Key de Google", type="password")
     
     st.divider()
     
@@ -25,7 +30,7 @@ with st.sidebar:
     if api_key:
         genai.configure(api_key=api_key)
     else:
-        st.warning("Necesitas una API Key para empezar.")
+        st.warning("Configura tu API Key en los 'Secrets' de Streamlit.")
 
 # --- FUNCIONES DEL CEREBRO ---
 def extract_text_from_pdf(file):
@@ -79,10 +84,12 @@ if uploaded_file and api_key:
                 
                 PREGUNTA: {prompt}
                 """
-                response = ask_gemini(full_prompt)
-                st.markdown(response)
-            
-            st.session_state.messages.append({"role": "assistant", "content": response})
+                try:
+                    response = ask_gemini(full_prompt)
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
     # --- PESTAÑA 2: EXAMEN ---
     with tab2:
@@ -98,8 +105,11 @@ if uploaded_file and api_key:
                 
                 TEXTO: {st.session_state['doc_text'][:15000]}
                 """
-                quiz = ask_gemini(prompt_quiz)
-                st.session_state['last_quiz'] = quiz
+                try:
+                    quiz = ask_gemini(prompt_quiz)
+                    st.session_state['last_quiz'] = quiz
+                except Exception as e:
+                    st.error("Error generando examen. Intenta de nuevo.")
         
         if 'last_quiz' in st.session_state:
             st.markdown(st.session_state['last_quiz'])
@@ -115,7 +125,6 @@ else:
     st.markdown("""
     Esta herramienta usa Inteligencia Artificial para ayudarte a estudiar tus propios apuntes.
     
-    1. **Consigue tu API Key** (Es gratis en Google AI Studio).
-    2. **Pégala en la barra lateral**.
-    3. **Sube tu PDF**.
+    1. **Sube tu PDF**.
+    2. **Empieza a estudiar**.
     """)
