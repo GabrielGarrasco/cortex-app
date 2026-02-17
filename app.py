@@ -5,6 +5,7 @@ from io import BytesIO
 import json
 import os
 import re
+import time  # <--- AGREGADO: Esto arregla el NameError
 from gtts import gTTS
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
@@ -26,12 +27,13 @@ if not os.path.exists(LIBRARY_FOLDER):
 def get_library_files():
     return [f for f in os.listdir(LIBRARY_FOLDER) if f.endswith('.pdf')]
 
-# --- FUNCIONES ROBUSTAS (NUEVAS) ---
+# --- FUNCIONES DE SEGURIDAD Y CONEXIÓN ---
 
 def try_connect_model(api_key):
-    """Prueba qué modelo está disponible para evitar el error NotFound"""
+    """Prueba conexión. Si falla Flash, usa Pro (más compatible)."""
     genai.configure(api_key=api_key)
     try:
+        # Intentamos listar modelos para ver si la key funciona
         model = genai.GenerativeModel('gemini-1.5-flash')
         model.generate_content("test")
         return 'gemini-1.5-flash'
@@ -39,18 +41,18 @@ def try_connect_model(api_key):
         return 'gemini-pro' # Fallback seguro
 
 def extract_text(path):
-    """Lee el PDF con protección contra archivos corruptos"""
+    """Lee PDF y BORRA el archivo si está corrupto para no romper la app."""
     try:
         with open(path, 'rb') as f:
             reader = PyPDF2.PdfReader(f)
+            if len(reader.pages) == 0: raise Exception("PDF Vacío")
             text = "".join([p.extract_text() for p in reader.pages])
         return text
     except Exception as e:
-        # Si el archivo está corrupto, lo borramos para no romper la app
-        st.error(f"Archivo corrupto detectado: {path}. Eliminando...")
+        st.error(f"⚠️ Archivo dañado detectado: {os.path.basename(path)}. Eliminando para recuperar el sistema...")
         try:
-            os.remove(path)
-            st.session_state['current_file'] = None
+            os.remove(path) # Auto-reparación
+            time.sleep(2)
             st.rerun()
         except:
             pass
@@ -61,46 +63,45 @@ def ask_gemini(prompt, model_name):
         model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         return response.text
-    except Exception as e:
-        # Captura errores de API y devuelve un string vacío seguro
+    except Exception:
         return ""
 
 def safe_json_parse(text):
-    """Intenta extraer JSON incluso si la IA añade texto extra"""
+    """Limpiador agresivo de JSON."""
     if not text: return []
     try:
-        # Busca contenido entre corchetes
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        if match: return json.loads(match.group(0))
-        # Busca contenido entre llaves
+        # 1. Buscar bloque JSON puro [...]
+        match_list = re.search(r'\[.*\]', text, re.DOTALL)
+        if match_list: return json.loads(match_list.group(0))
+        
+        # 2. Buscar objeto único {...}
         match_obj = re.search(r'\{.*\}', text, re.DOTALL)
         if match_obj: 
             data = json.loads(match_obj.group(0))
             return [data] if not isinstance(data, list) else data
-        # Intenta limpieza básica
+            
+        # 3. Limpieza manual de markdown
         clean = text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean)
     except:
         return []
 
-# --- BARRA LATERAL ---
+# --- INTERFAZ BARRA LATERAL ---
 with st.sidebar:
     st.image("https://img.icons8.com/clouds/200/brain.png", width=120)
-    st.title("CORTEX v4.0")
-    st.caption("Auto-Recovery System")
+    st.title("CORTEX v4.1")
     
     # API KEY
     if "GOOGLE_API_KEY" in st.secrets:
         api_key = st.secrets["GOOGLE_API_KEY"]
-        st.success("✅ API Key Secreta")
+        st.success("✅ Online")
     else:
-        api_key = st.text_input("🔑 API Key Google", type="password")
+        api_key = st.text_input("🔑 API Key", type="password")
 
-    # DETECCIÓN DE MODELO
+    # DETECTOR DE MODELO
     valid_model = None
     if api_key:
         valid_model = try_connect_model(api_key)
-        # st.caption(f"🤖 Modelo activo: {valid_model}")
 
     st.divider()
 
@@ -116,13 +117,12 @@ with st.sidebar:
             selected_file = st.selectbox("Elige un libro:", files)
             selected_file_path = os.path.join(LIBRARY_FOLDER, selected_file)
             
-            # Botón de emergencia para borrar archivo actual
-            if st.button("🗑️ Borrar este libro"):
+            if st.button("🗑️ Eliminar Archivo"):
                 os.remove(selected_file_path)
                 st.session_state['current_file'] = None
                 st.rerun()
         else:
-            st.info("No hay libros. Sube uno abajo.")
+            st.info("Biblioteca vacía.")
             
     elif mode == "📤 Subir PDF":
         uploaded_file = st.file_uploader("Arrastra aquí", type="pdf")
@@ -130,24 +130,24 @@ with st.sidebar:
             save_path = os.path.join(LIBRARY_FOLDER, uploaded_file.name)
             with open(save_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
-            st.success("Subida exitosa.")
-            time.sleep(1) # Pequeña pausa para asegurar escritura
+            st.success("Subido correctamente.")
+            time.sleep(1) # Espera segura
             st.rerun()
 
     st.divider()
     socratic_mode = st.toggle("🎓 Modo Socrático", value=False)
 
-# --- ESTADO (SESSION STATE) ---
+# --- ESTADO ---
 if 'messages' not in st.session_state: st.session_state['messages'] = []
 if 'quiz_data' not in st.session_state: st.session_state['quiz_data'] = None
 if 'doc_text' not in st.session_state: st.session_state['doc_text'] = ""
 if 'current_file' not in st.session_state: st.session_state['current_file'] = None
 if 'flashcards' not in st.session_state: st.session_state['flashcards'] = []
 
-# --- LÓGICA PRINCIPAL ---
+# --- APP PRINCIPAL ---
 if selected_file_path and api_key and valid_model:
     
-    # Cambio de archivo
+    # Detectar cambio de archivo
     if st.session_state['current_file'] != selected_file_path:
         st.session_state['current_file'] = selected_file_path
         st.session_state['doc_text'] = ""
@@ -156,25 +156,27 @@ if selected_file_path and api_key and valid_model:
         st.session_state['flashcards'] = []
         st.rerun()
 
-    # Carga de Texto
+    # Cargar Texto (Con manejo de errores)
     if st.session_state['doc_text'] == "":
         with st.spinner("🧠 Leyendo documento..."):
             extracted = extract_text(selected_file_path)
             if extracted:
                 st.session_state['doc_text'] = extracted
             else:
-                st.stop() # Detiene la ejecución si falló la lectura
+                st.stop() # Detiene la app si el PDF falló (ya se borró)
 
     # PESTAÑAS
     t1, t2, t3, t4 = st.tabs(["Chat", "Examen", "Flashcards", "Recursos"])
 
     # 1. CHAT
     with t1:
-        prompt_sys = "Eres un tutor socrático." if socratic_mode else "Eres un profesor experto."
+        st.header("Chat Docente")
+        prompt_sys = "Eres un tutor socrático. Guía al alumno con preguntas." if socratic_mode else "Eres un profesor experto y directo."
+        
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
         
-        if p := st.chat_input("Pregunta..."):
+        if p := st.chat_input("Pregunta al profesor..."):
             st.session_state.messages.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
@@ -184,76 +186,105 @@ if selected_file_path and api_key and valid_model:
                     st.markdown(res)
                     st.session_state.messages.append({"role": "assistant", "content": res})
                 else:
-                    st.error("Error de conexión con Google Gemini.")
+                    st.error("Error de conexión. Intenta de nuevo.")
 
     # 2. EXAMEN
     with t2:
-        if st.button("📝 Crear Examen"):
-            with st.spinner("Generando..."):
-                p = f"Genera 3 preguntas multiple choice JSON válido: [{{'pregunta':'...', 'opciones':['A)..','B)..','C).. '], 'correcta':'A)..'}}] sobre: {st.session_state['doc_text'][:10000]}"
+        st.header("Simulacro")
+        if st.button("📝 Generar Examen"):
+            with st.spinner("Creando preguntas..."):
+                # Prompt reforzado para JSON
+                p = f"""
+                Genera 3 preguntas multiple choice.
+                FORMATO JSON PURO OBLIGATORIO:
+                [
+                  {{"pregunta": "¿Qué es X?", "opciones": ["A) Y", "B) Z", "C) W"], "correcta": "A) Y"}}
+                ]
+                Texto: {st.session_state['doc_text'][:10000]}
+                """
                 data = safe_json_parse(ask_gemini(p, valid_model))
                 if data:
                     st.session_state['quiz_data'] = data
                     st.session_state['quiz_submitted'] = False
                     st.rerun()
                 else:
-                    st.warning("La IA no pudo generar el examen. Intenta de nuevo (a veces pasa).")
+                    st.warning("La IA no pudo generar el examen correctamente. Prueba otra vez.")
 
         if st.session_state['quiz_data']:
             score = 0
             for i, q in enumerate(st.session_state['quiz_data']):
                 st.markdown(f"**{i+1}. {q['pregunta']}**")
-                val = st.radio(f"R:", q['opciones'], key=f"q{i}", disabled=st.session_state.get('quiz_submitted', False))
+                val = st.radio(f"Respuesta {i+1}", q['opciones'], key=f"q{i}", disabled=st.session_state.get('quiz_submitted', False))
+                
                 if st.session_state.get('quiz_submitted', False):
-                    if val and val.startswith(q['correcta'][0]): 
-                        st.success("Correcto") 
-                        score+=1
-                    else: st.error(f"Era: {q['correcta']}")
+                    # Verificación flexible (por letra o contenido)
+                    correcta = q['correcta']
+                    if val == correcta or (val and val.startswith(correcta[0])):
+                        st.success("✅ Correcto")
+                        score += 1
+                    else:
+                        st.error(f"❌ Incorrecto. Era: {correcta}")
+                st.write("---")
             
             if not st.session_state.get('quiz_submitted', False):
-                if st.button("Corregir"): 
+                if st.button("Corregir Todo"): 
                     st.session_state['quiz_submitted'] = True
                     st.rerun()
             else:
-                st.metric("Nota", f"{score}/{len(st.session_state['quiz_data'])}")
+                st.metric("Nota Final", f"{score}/{len(st.session_state['quiz_data'])}")
 
     # 3. FLASHCARDS
     with t3:
-        if st.button("⚡ Flashcards"):
-            with st.spinner("Generando..."):
-                p = f"Genera 5 flashcards JSON: [{{'pregunta':'...', 'respuesta':'...'}}] sobre: {st.session_state['doc_text'][:10000]}"
+        st.header("Tarjetas de Memoria")
+        if st.button("⚡ Generar Flashcards"):
+            with st.spinner("Sintetizando conceptos..."):
+                p = f"""
+                Genera 5 flashcards clave.
+                FORMATO JSON PURO:
+                [
+                  {{"pregunta": "Concepto", "respuesta": "Definición breve"}}
+                ]
+                Texto: {st.session_state['doc_text'][:10000]}
+                """
                 data = safe_json_parse(ask_gemini(p, valid_model))
                 if data:
                     st.session_state['flashcards'] = data
                     st.session_state['fc_idx'] = 0
                     st.rerun()
+                else:
+                    st.warning("Error de formato IA. Intenta de nuevo.")
         
         if st.session_state['flashcards']:
             i = st.session_state.get('fc_idx', 0)
             if i >= len(st.session_state['flashcards']): i=0
             card = st.session_state['flashcards'][i]
-            st.info(f"Card {i+1}/{len(st.session_state['flashcards'])}")
+            
+            st.markdown(f"**Tarjeta {i+1} / {len(st.session_state['flashcards'])}**")
             with st.container(border=True):
                 st.subheader(card['pregunta'])
-                if st.checkbox("Respuesta", key=f"fc{i}"): st.warning(card['respuesta'])
+                if st.checkbox("Mostrar Reverso", key=f"fc{i}"): st.info(card['respuesta'])
+            
             c1,c2 = st.columns(2)
-            if c1.button("Prev") and i>0: 
+            if c1.button("⬅️ Anterior") and i>0: 
                 st.session_state['fc_idx'] = i-1
                 st.rerun()
-            if c2.button("Next") and i<len(st.session_state['flashcards'])-1: 
+            if c2.button("Siguiente ➡️") and i<len(st.session_state['flashcards'])-1: 
                 st.session_state['fc_idx'] = i+1
                 st.rerun()
 
     # 4. RECURSOS
     with t4:
-        if st.button("🔍 Buscar Videos"):
-            p = f"3 conceptos clave separados por comas de: {st.session_state['doc_text'][:5000]}"
+        st.header("Recursos Externos")
+        if st.button("🔍 Buscar Videos Recomendados"):
+            p = f"Lista los 3 conceptos técnicos más difíciles de: {st.session_state['doc_text'][:5000]}. Solo nombres separados por coma."
             res = ask_gemini(p, valid_model)
             if res:
                 for c in res.split(","):
-                    st.markdown(f"**📺 {c.strip()}** -> [YouTube](https://www.youtube.com/results?search_query={c.strip().replace(' ','+')})")
+                    tag = c.strip()
+                    st.markdown(f"**📺 {tag}**")
+                    st.markdown(f"[Ver en YouTube](https://www.youtube.com/results?search_query={tag.replace(' ','+')}+tutorial)")
 
 elif not api_key:
-    st.warning("👈 Ingresa tu API Key en la barra lateral.")
+    st.warning("👈 Ingresa tu API Key para comenzar.")
 elif not selected_file_path:
-    st.info("👈 Selecciona o sube un PDF.")
+    st.info("👈 Sube un PDF en la barra lateral.")
