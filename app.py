@@ -4,7 +4,7 @@ import PyPDF2
 from io import BytesIO
 import json
 import os
-import time
+import re  # <--- IMPORTANTE: Necesario para encontrar el JSON
 from gtts import gTTS
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
@@ -35,7 +35,7 @@ def get_library_files():
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.image("https://img.icons8.com/clouds/200/brain.png", width=120)
-    st.title("CORTEX v3.0")
+    st.title("CORTEX v3.1")
     st.caption("Sistema Operativo de Estudio")
     
     if "GOOGLE_API_KEY" in st.secrets:
@@ -80,25 +80,39 @@ def extract_text(path):
         reader = PyPDF2.PdfReader(f)
         return "".join([p.extract_text() for p in reader.pages])
 
-def clean_json(text):
-    return text.replace("```json", "").replace("```", "").strip()
-
 def ask_gemini(prompt):
-    # CAMBIO IMPORTANTE: Usamos 'gemini-pro' que es el modelo más compatible
+    # Usamos gemini-pro para mayor estabilidad
     model = genai.GenerativeModel('gemini-pro') 
-    
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        # Esto evitará que la app se rompa si hay un error, mostrando un mensaje
-        return f"Error de IA: {str(e)}"
+        return "" # Devuelve vacío si falla, para manejarlo luego
+
+def safe_json_parse(text):
+    """
+    Intenta encontrar y limpiar JSON dentro de la respuesta de la IA.
+    Esto arregla el error 'JSONDecodeError'.
+    """
+    try:
+        # 1. Buscar el primer corchete '[' y el último ']'
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+            return json.loads(json_str)
+        else:
+            # Si no encuentra corchetes, intenta limpiar markdown básico
+            cleaned = text.replace("```json", "").replace("```", "").strip()
+            return json.loads(cleaned)
+    except Exception as e:
+        return None # Indica que falló la conversión
 
 # --- ESTADO ---
 if 'messages' not in st.session_state: st.session_state['messages'] = []
 if 'quiz_data' not in st.session_state: st.session_state['quiz_data'] = None
 if 'doc_text' not in st.session_state: st.session_state['doc_text'] = ""
 if 'current_file' not in st.session_state: st.session_state['current_file'] = None
+if 'flashcards' not in st.session_state: st.session_state['flashcards'] = []
 
 # --- APP PRINCIPAL ---
 if selected_file_path and api_key:
@@ -108,6 +122,7 @@ if selected_file_path and api_key:
         st.session_state['doc_text'] = ""
         st.session_state['messages'] = []
         st.session_state['quiz_data'] = None
+        st.session_state['flashcards'] = []
         st.rerun()
 
     if st.session_state['doc_text'] == "":
@@ -120,7 +135,7 @@ if selected_file_path and api_key:
     # 1. CHAT
     with t1:
         st.header("Tutor Inteligente")
-        prompt_sys = "Eres un tutor socrático." if socratic_mode else "Eres un profesor experto."
+        prompt_sys = "Eres un tutor socrático. Ayuda a pensar, no des la respuesta directa." if socratic_mode else "Eres un profesor experto, claro y conciso."
         
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
@@ -129,12 +144,15 @@ if selected_file_path and api_key:
             st.session_state.messages.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                full = f"{prompt_sys}\nContexto: {st.session_state['doc_text'][:25000]}\nPregunta: {p}"
+                full = f"{prompt_sys}\nContexto (Responde basándote en esto): {st.session_state['doc_text'][:25000]}\nPregunta: {p}"
                 res = ask_gemini(full)
-                st.markdown(res)
-                st.session_state.messages.append({"role": "assistant", "content": res})
+                if res:
+                    st.markdown(res)
+                    st.session_state.messages.append({"role": "assistant", "content": res})
+                else:
+                    st.error("Error de conexión con la IA. Intenta de nuevo.")
 
-    # 2. EXAMEN (NUEVO)
+    # 2. EXAMEN
     with t2:
         st.header("Simulacro de Examen")
         col_btn, col_res = st.columns([1, 4])
@@ -143,39 +161,40 @@ if selected_file_path and api_key:
             if st.button("📝 Generar Examen"):
                 with st.spinner("Diseñando preguntas..."):
                     p = f"""
-                    Genera 3 preguntas de selección múltiple sobre el texto.
-                    Formato JSON estricto:
+                    Crea 3 preguntas de opción múltiple (A, B, C) sobre el texto.
+                    Devuelve SOLO una lista JSON válida. Sin texto extra.
+                    Formato:
                     [
                         {{"pregunta": "...", "opciones": ["A) ..", "B) ..", "C) .."], "correcta": "A) .."}},
                         ...
                     ]
                     Texto: {st.session_state['doc_text'][:15000]}
                     """
-                    try:
-                        q_text = ask_gemini(p)
-                        st.session_state['quiz_data'] = json.loads(clean_json(q_text))
-                        # Inicializar respuestas del usuario
-                        st.session_state['user_answers'] = [None] * len(st.session_state['quiz_data'])
+                    response_text = ask_gemini(p)
+                    data = safe_json_parse(response_text)
+                    
+                    if data:
+                        st.session_state['quiz_data'] = data
                         st.session_state['quiz_submitted'] = False
                         st.rerun()
-                    except: st.error("Error generando examen.")
+                    else:
+                        st.error("La IA no pudo generar el formato correcto. Intenta de nuevo.")
 
         if st.session_state['quiz_data']:
             score = 0
             for i, q in enumerate(st.session_state['quiz_data']):
                 st.markdown(f"**{i+1}. {q['pregunta']}**")
-                
-                # Widget de radio buttons
-                # Usamos key única por pregunta y deshabilitamos si ya se envió
                 val = st.radio(f"Opciones {i}", q['opciones'], key=f"q_{i}", index=None, disabled=st.session_state.get('quiz_submitted', False))
                 
-                # Si se envió, mostrar corrección
                 if st.session_state.get('quiz_submitted', False):
-                    if val == q['correcta']:
-                        st.success(f"✅ Correcto! ({val})")
-                        score += 1
+                    if val and val.startswith(q['correcta'][0]): # Comparar solo la letra A) o B)
+                         st.success(f"✅ Correcto!")
+                         score += 1
+                    elif val == q['correcta']: # Comparación exacta por si acaso
+                         st.success(f"✅ Correcto!")
+                         score += 1
                     else:
-                        st.error(f"❌ Incorrecto. Era: {q['correcta']}")
+                        st.error(f"❌ La correcta era: {q['correcta']}")
                 st.write("---")
 
             if not st.session_state.get('quiz_submitted', False):
@@ -190,49 +209,75 @@ if selected_file_path and api_key:
     # 3. FLASHCARDS
     with t3:
         if st.button("⚡ Crear Flashcards"):
-            p = f"5 flashcards JSON [{{'pregunta':'...', 'respuesta':'...'}}] de: {st.session_state['doc_text'][:15000]}"
-            st.session_state['flashcards'] = json.loads(clean_json(ask_gemini(p)))
+            with st.spinner("Generando tarjetas..."):
+                p = f"""
+                Genera 5 flashcards sobre conceptos clave del texto.
+                Devuelve SOLO una lista JSON válida.
+                Formato: [{{'pregunta':'...', 'respuesta':'...'}}] 
+                Texto: {st.session_state['doc_text'][:15000]}
+                """
+                response_text = ask_gemini(p)
+                data = safe_json_parse(response_text)
+                
+                if data:
+                    st.session_state['flashcards'] = data
+                    st.session_state['fc_idx'] = 0
+                else:
+                    st.error("Error al generar formato JSON. Prueba otra vez.")
         
-        if 'flashcards' in st.session_state and st.session_state['flashcards']:
+        if st.session_state['flashcards']:
             idx = st.session_state.get('fc_idx', 0)
+            # Asegurar que el índice es válido
+            if idx >= len(st.session_state['flashcards']): idx = 0
+            
             card = st.session_state['flashcards'][idx]
-            st.info(f"Tarjeta {idx+1}")
+            st.info(f"Tarjeta {idx+1} de {len(st.session_state['flashcards'])}")
+            
             with st.container(border=True):
                 st.subheader(card['pregunta'])
-                if st.checkbox("Ver respuesta", key=f"f_{idx}"): st.warning(card['respuesta'])
+                if st.checkbox("Mostrar respuesta", key=f"f_{idx}"): 
+                    st.warning(card['respuesta'])
+            
             c1,c2 = st.columns(2)
-            if c1.button("Prev") and idx>0: 
-                st.session_state['fc_idx'] = idx-1
+            if c1.button("⬅️ Anterior") and idx > 0: 
+                st.session_state['fc_idx'] = idx - 1
                 st.rerun()
-            if c2.button("Next") and idx<len(st.session_state['flashcards'])-1: 
-                st.session_state['fc_idx'] = idx+1
+            if c2.button("Siguiente ➡️") and idx < len(st.session_state['flashcards']) - 1: 
+                st.session_state['fc_idx'] = idx + 1
                 st.rerun()
 
     # 4. MAPA
     with t4:
         if st.button("🗺️ Ver Estructura"):
-            p = f"Graphviz DOT code simple del texto: {st.session_state['doc_text'][:15000]}"
-            st.graphviz_chart(clean_json(ask_gemini(p)))
+            with st.spinner("Analizando..."):
+                p = f"Genera código Graphviz DOT simple para un mapa mental de: {st.session_state['doc_text'][:15000]}. Devuelve SOLO el código dentro de las llaves."
+                res = ask_gemini(p)
+                # Limpieza simple para DOT
+                clean_dot = res.replace("```dot", "").replace("```", "").strip()
+                try:
+                    st.graphviz_chart(clean_dot)
+                except:
+                    st.error("No se pudo visualizar el gráfico. Intenta de nuevo.")
 
-    # 5. RECURSOS (NUEVO)
+    # 5. RECURSOS
     with t5:
         st.header("Expandir Conocimiento")
-        st.write("La IA busca los mejores términos para complementar este PDF en YouTube.")
         if st.button("🔍 Analizar Conceptos Clave"):
             with st.spinner("Buscando conceptos..."):
                 p = f"""
-                Dime los 3 conceptos técnicos MÁS difíciles o importantes de este texto.
-                Solo dame los nombres, separados por comas.
+                Identifica los 3 términos técnicos más importantes de este texto.
+                Devuélvelos separados solo por comas. Ejemplo: Termodinámica, Entropía, Ciclo de Carnot
                 Texto: {st.session_state['doc_text'][:10000]}
                 """
-                conceptos = ask_gemini(p).split(",")
-                
-                for concepto in conceptos:
-                    clean_c = concepto.strip()
-                    st.markdown(f"### 📺 {clean_c}")
-                    # Generar link de búsqueda de YouTube
-                    yt_url = f"https://www.youtube.com/results?search_query={clean_c.replace(' ', '+')}+tutorial"
-                    st.markdown(f"[Ver videos relacionados en YouTube]({yt_url})")
+                res = ask_gemini(p)
+                if res:
+                    conceptos = res.split(",")
+                    for concepto in conceptos:
+                        clean_c = concepto.strip()
+                        if clean_c:
+                            st.markdown(f"### 📺 {clean_c}")
+                            yt_url = f"https://www.youtube.com/results?search_query={clean_c.replace(' ', '+')}+curso"
+                            st.markdown(f"[Buscar tutoriales en YouTube]({yt_url})")
 
 else:
     st.info("👈 Selecciona un documento para empezar.")
