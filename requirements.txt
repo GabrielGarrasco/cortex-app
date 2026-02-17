@@ -1,4 +1,5 @@
 streamlit
 google-generativeai
 PyPDF2
+gTTS
 pandas
