@@ -4,7 +4,7 @@ import PyPDF2
 from io import BytesIO
 import json
 import os
-import re  # <--- IMPORTANTE: Necesario para encontrar el JSON
+import re  # <--- IMPORTANTE: Necesario para que no falle el JSON
 from gtts import gTTS
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
@@ -35,8 +35,8 @@ def get_library_files():
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.image("https://img.icons8.com/clouds/200/brain.png", width=120)
-    st.title("CORTEX v3.1")
-    st.caption("Sistema Operativo de Estudio")
+    st.title("CORTEX v3.2")
+    st.caption("Sistema Blindado")
     
     if "GOOGLE_API_KEY" in st.secrets:
         api_key = st.secrets["GOOGLE_API_KEY"]
@@ -81,19 +81,20 @@ def extract_text(path):
         return "".join([p.extract_text() for p in reader.pages])
 
 def ask_gemini(prompt):
-    # Usamos gemini-pro para mayor estabilidad
+    # Usamos gemini-pro que es el más estable
     model = genai.GenerativeModel('gemini-pro') 
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return "" # Devuelve vacío si falla, para manejarlo luego
+        return "" # Devuelve vacío si falla para no romper el JSON
 
 def safe_json_parse(text):
     """
     Intenta encontrar y limpiar JSON dentro de la respuesta de la IA.
-    Esto arregla el error 'JSONDecodeError'.
+    Evita el error 'JSONDecodeError'.
     """
+    if not text: return None
     try:
         # 1. Buscar el primer corchete '[' y el último ']'
         match = re.search(r'\[.*\]', text, re.DOTALL)
@@ -105,7 +106,7 @@ def safe_json_parse(text):
             cleaned = text.replace("```json", "").replace("```", "").strip()
             return json.loads(cleaned)
     except Exception as e:
-        return None # Indica que falló la conversión
+        return None # Indica que falló la conversión sin explotar
 
 # --- ESTADO ---
 if 'messages' not in st.session_state: st.session_state['messages'] = []
@@ -144,13 +145,13 @@ if selected_file_path and api_key:
             st.session_state.messages.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                full = f"{prompt_sys}\nContexto (Responde basándote en esto): {st.session_state['doc_text'][:25000]}\nPregunta: {p}"
+                full = f"{prompt_sys}\nContexto: {st.session_state['doc_text'][:25000]}\nPregunta: {p}"
                 res = ask_gemini(full)
                 if res:
                     st.markdown(res)
                     st.session_state.messages.append({"role": "assistant", "content": res})
                 else:
-                    st.error("Error de conexión con la IA. Intenta de nuevo.")
+                    st.error("Error de conexión con la IA. Verifica tu API Key o intenta más tarde.")
 
     # 2. EXAMEN
     with t2:
@@ -187,10 +188,10 @@ if selected_file_path and api_key:
                 val = st.radio(f"Opciones {i}", q['opciones'], key=f"q_{i}", index=None, disabled=st.session_state.get('quiz_submitted', False))
                 
                 if st.session_state.get('quiz_submitted', False):
-                    if val and val.startswith(q['correcta'][0]): # Comparar solo la letra A) o B)
+                    if val and val.startswith(q['correcta'][0]):
                          st.success(f"✅ Correcto!")
                          score += 1
-                    elif val == q['correcta']: # Comparación exacta por si acaso
+                    elif val == q['correcta']:
                          st.success(f"✅ Correcto!")
                          score += 1
                     else:
@@ -222,12 +223,12 @@ if selected_file_path and api_key:
                 if data:
                     st.session_state['flashcards'] = data
                     st.session_state['fc_idx'] = 0
+                    st.rerun()
                 else:
                     st.error("Error al generar formato JSON. Prueba otra vez.")
         
         if st.session_state['flashcards']:
             idx = st.session_state.get('fc_idx', 0)
-            # Asegurar que el índice es válido
             if idx >= len(st.session_state['flashcards']): idx = 0
             
             card = st.session_state['flashcards'][idx]
@@ -252,7 +253,6 @@ if selected_file_path and api_key:
             with st.spinner("Analizando..."):
                 p = f"Genera código Graphviz DOT simple para un mapa mental de: {st.session_state['doc_text'][:15000]}. Devuelve SOLO el código dentro de las llaves."
                 res = ask_gemini(p)
-                # Limpieza simple para DOT
                 clean_dot = res.replace("```dot", "").replace("```", "").strip()
                 try:
                     st.graphviz_chart(clean_dot)
@@ -266,7 +266,7 @@ if selected_file_path and api_key:
             with st.spinner("Buscando conceptos..."):
                 p = f"""
                 Identifica los 3 términos técnicos más importantes de este texto.
-                Devuélvelos separados solo por comas. Ejemplo: Termodinámica, Entropía, Ciclo de Carnot
+                Devuélvelos separados solo por comas.
                 Texto: {st.session_state['doc_text'][:10000]}
                 """
                 res = ask_gemini(p)
