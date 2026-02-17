@@ -3,12 +3,13 @@ import google.generativeai as genai
 import PyPDF2
 from io import BytesIO
 import json
-import os # <--- NUEVO: Para manejar archivos del sistema
+import os
+import time
 from gtts import gTTS
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
-    page_title="CORTEX: Study Companion",
+    page_title="CORTEX: Study OS",
     layout="wide",
     page_icon="🧠",
     initial_sidebar_state="expanded"
@@ -17,14 +18,14 @@ st.set_page_config(
 # --- ESTILOS CSS ---
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; border-radius: 10px; }
-    .flashcard { background-color: #f0f2f6; padding: 20px; border-radius: 15px; border-left: 5px solid #4CAF50; margin-bottom: 10px; }
+    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold;}
+    .exam-box { background-color: #f8f9fa; padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin-bottom: 15px; color: #333;}
+    .stProgress > div > div > div > div { background-color: #4CAF50; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- GESTIÓN DE BIBLIOTECA LOCAL (NUEVO) ---
+# --- GESTIÓN DE BIBLIOTECA LOCAL ---
 LIBRARY_FOLDER = "biblioteca"
-
 if not os.path.exists(LIBRARY_FOLDER):
     os.makedirs(LIBRARY_FOLDER)
 
@@ -33,173 +34,198 @@ def get_library_files():
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.image("https://img.icons8.com/clouds/200/brain.png", width=100)
-    st.title("CORTEX v2.1")
-    st.caption("Memoria Persistente")
+    st.image("https://img.icons8.com/clouds/200/brain.png", width=120)
+    st.title("CORTEX v3.0")
+    st.caption("Sistema Operativo de Estudio")
     
-    # API Key
     if "GOOGLE_API_KEY" in st.secrets:
         api_key = st.secrets["GOOGLE_API_KEY"]
-        st.success("✅ Llave detectada")
+        st.success("✅ Sistema Online")
     else:
-        api_key = st.text_input("🔑 Tu API Key de Google", type="password")
+        api_key = st.text_input("🔑 API Key", type="password")
     
     st.divider()
 
-    # --- NUEVO SISTEMA DE ARCHIVOS ---
-    st.subheader("📚 Tu Biblioteca")
-    
-    # 1. Selector de Modo (Subir o Elegir)
-    mode = st.radio("Opción:", ["📂 Abrir Existente", "⬆️ Subir Nuevo"])
+    # Selector de Biblioteca
+    st.subheader("📚 Biblioteca")
+    mode = st.radio("Acción:", ["📂 Estudiar", "⬆️ Importar"], label_visibility="collapsed")
     
     selected_file_path = None
     
-    if mode == "📂 Abrir Existente":
+    if mode == "📂 Estudiar":
         files = get_library_files()
         if files:
-            selected_file = st.selectbox("Selecciona un libro:", files)
+            selected_file = st.selectbox("Selecciona libro:", files)
             selected_file_path = os.path.join(LIBRARY_FOLDER, selected_file)
-            st.info(f"📖 Leyendo: {selected_file}")
         else:
-            st.warning("La biblioteca está vacía. Sube un archivo primero.")
+            st.warning("Biblioteca vacía.")
             
-    elif mode == "⬆️ Subir Nuevo":
-        uploaded_file = st.file_uploader("Arrastra tu PDF aquí", type="pdf")
+    elif mode == "⬆️ Importar":
+        uploaded_file = st.file_uploader("PDF", type="pdf", label_visibility="collapsed")
         if uploaded_file:
-            # Guardar el archivo en la carpeta biblioteca
             save_path = os.path.join(LIBRARY_FOLDER, uploaded_file.name)
             with open(save_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
-            st.success(f"✅ Guardado en biblioteca: {uploaded_file.name}")
+            st.success(f"Guardado: {uploaded_file.name}")
             selected_file_path = save_path
-            # Forzar recarga para actualizar la lista
             st.rerun()
 
     st.divider()
-    
-    # Configuración del Tutor
-    st.subheader("⚙️ Configuración")
-    socratic_mode = st.toggle("🎓 Modo Socrático", value=False)
-
-    if api_key:
-        genai.configure(api_key=api_key)
+    socratic_mode = st.toggle("🎓 Modo Tutor Socrático", value=False)
+    if api_key: genai.configure(api_key=api_key)
 
 # --- FUNCIONES ---
-def extract_text_from_pdf(file_path):
-    # Modificado para leer desde ruta de archivo, no objeto Streamlit
-    with open(file_path, 'rb') as f:
+def extract_text(path):
+    with open(path, 'rb') as f:
         reader = PyPDF2.PdfReader(f)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text()
-    return text
+        return "".join([p.extract_text() for p in reader.pages])
 
-def clean_json_text(text):
-    text = text.replace("```json", "").replace("```", "")
-    return text.strip()
+def clean_json(text):
+    return text.replace("```json", "").replace("```", "").strip()
 
 def ask_gemini(prompt):
     model = genai.GenerativeModel('gemini-1.5-flash')
-    response = model.generate_content(prompt)
-    return response.text
+    return model.generate_content(prompt).text
 
-# --- LÓGICA DE ESTADO ---
-# Inicializamos variables si no existen
-if 'current_file' not in st.session_state: st.session_state['current_file'] = None
-if 'doc_text' not in st.session_state: st.session_state['doc_text'] = ""
-if 'flashcards' not in st.session_state: st.session_state['flashcards'] = []
-if 'current_card' not in st.session_state: st.session_state['current_card'] = 0
+# --- ESTADO ---
 if 'messages' not in st.session_state: st.session_state['messages'] = []
+if 'quiz_data' not in st.session_state: st.session_state['quiz_data'] = None
+if 'doc_text' not in st.session_state: st.session_state['doc_text'] = ""
+if 'current_file' not in st.session_state: st.session_state['current_file'] = None
 
-# --- PROCESAMIENTO ---
+# --- APP PRINCIPAL ---
 if selected_file_path and api_key:
-    
-    # Detectar si cambiamos de libro para limpiar la memoria
+    # Reset si cambia archivo
     if st.session_state['current_file'] != selected_file_path:
         st.session_state['current_file'] = selected_file_path
-        st.session_state['messages'] = [] # Limpiar chat anterior
-        st.session_state['flashcards'] = [] # Limpiar flashcards anteriores
-        st.session_state['doc_text'] = "" # Limpiar texto
+        st.session_state['doc_text'] = ""
+        st.session_state['messages'] = []
+        st.session_state['quiz_data'] = None
         st.rerun()
 
-    # Cargar texto si es necesario
     if st.session_state['doc_text'] == "":
-        with st.spinner("🧠 Indexando conocimiento..."):
-            text = extract_text_from_pdf(selected_file_path)
-            st.session_state['doc_text'] = text
-            # st.toast("¡Libro cargado!", icon="📚")
+        with st.spinner("🧠 Cargando en memoria..."):
+            st.session_state['doc_text'] = extract_text(selected_file_path)
 
-    # --- TABS (IGUAL QUE ANTES) ---
-    tab1, tab2, tab3, tab4 = st.tabs(["👨‍🏫 Chat", "📇 Flashcards", "🗺️ Mapa", "🎧 Audio"])
+    # --- PESTAÑAS ---
+    t1, t2, t3, t4, t5 = st.tabs(["💬 Chat", "📝 Examen", "📇 Flashcards", "🗺️ Mapa", "▶️ Recursos"])
 
     # 1. CHAT
-    with tab1:
-        st.header("Chat con tu Biblioteca")
-        if socratic_mode:
-            system_prompt = "Eres un tutor socrático. NO des respuestas directas. Haz preguntas guía."
-        else:
-            system_prompt = "Eres un profesor experto y directo."
-
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        if prompt := st.chat_input("Pregunta al libro..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"): st.markdown(prompt)
+    with t1:
+        st.header("Tutor Inteligente")
+        prompt_sys = "Eres un tutor socrático." if socratic_mode else "Eres un profesor experto."
+        
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]): st.markdown(m["content"])
+            
+        if p := st.chat_input("Duda sobre el texto..."):
+            st.session_state.messages.append({"role": "user", "content": p})
+            with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                full_prompt = f"{system_prompt}\nCONTEXTO: {st.session_state['doc_text'][:25000]}\nPREGUNTA: {prompt}"
-                try:
-                    res = ask_gemini(full_prompt)
-                    st.markdown(res)
-                    st.session_state.messages.append({"role": "assistant", "content": res})
-                except Exception as e: st.error(str(e))
+                full = f"{prompt_sys}\nContexto: {st.session_state['doc_text'][:25000]}\nPregunta: {p}"
+                res = ask_gemini(full)
+                st.markdown(res)
+                st.session_state.messages.append({"role": "assistant", "content": res})
 
-    # 2. FLASHCARDS
-    with tab2:
-        col_gen, col_info = st.columns([1, 3])
-        with col_gen:
-            if st.button("⚡ Generar Flashcards"):
-                with st.spinner("Creando..."):
-                    p = f"Genera 5 flashcards JSON: [{{'pregunta':'...', 'respuesta':'...'}}] sobre: {st.session_state['doc_text'][:15000]}"
+    # 2. EXAMEN (NUEVO)
+    with t2:
+        st.header("Simulacro de Examen")
+        col_btn, col_res = st.columns([1, 4])
+        
+        with col_btn:
+            if st.button("📝 Generar Examen"):
+                with st.spinner("Diseñando preguntas..."):
+                    p = f"""
+                    Genera 3 preguntas de selección múltiple sobre el texto.
+                    Formato JSON estricto:
+                    [
+                        {{"pregunta": "...", "opciones": ["A) ..", "B) ..", "C) .."], "correcta": "A) .."}},
+                        ...
+                    ]
+                    Texto: {st.session_state['doc_text'][:15000]}
+                    """
                     try:
-                        r = ask_gemini(p)
-                        st.session_state['flashcards'] = json.loads(clean_json_text(r))
+                        q_text = ask_gemini(p)
+                        st.session_state['quiz_data'] = json.loads(clean_json(q_text))
+                        # Inicializar respuestas del usuario
+                        st.session_state['user_answers'] = [None] * len(st.session_state['quiz_data'])
+                        st.session_state['quiz_submitted'] = False
                         st.rerun()
-                    except: st.error("Error al generar.")
+                    except: st.error("Error generando examen.")
 
-        if st.session_state['flashcards']:
-            i = st.session_state['current_card']
-            card = st.session_state['flashcards'][i]
-            st.progress((i+1)/len(st.session_state['flashcards']))
+        if st.session_state['quiz_data']:
+            score = 0
+            for i, q in enumerate(st.session_state['quiz_data']):
+                st.markdown(f"**{i+1}. {q['pregunta']}**")
+                
+                # Widget de radio buttons
+                # Usamos key única por pregunta y deshabilitamos si ya se envió
+                val = st.radio(f"Opciones {i}", q['opciones'], key=f"q_{i}", index=None, disabled=st.session_state.get('quiz_submitted', False))
+                
+                # Si se envió, mostrar corrección
+                if st.session_state.get('quiz_submitted', False):
+                    if val == q['correcta']:
+                        st.success(f"✅ Correcto! ({val})")
+                        score += 1
+                    else:
+                        st.error(f"❌ Incorrecto. Era: {q['correcta']}")
+                st.write("---")
+
+            if not st.session_state.get('quiz_submitted', False):
+                if st.button("Corregir Examen"):
+                    st.session_state['quiz_submitted'] = True
+                    st.rerun()
+            else:
+                final_score = (score / len(st.session_state['quiz_data'])) * 100
+                st.metric("Calificación Final", f"{final_score:.0f}/100")
+                if final_score == 100: st.balloons()
+
+    # 3. FLASHCARDS
+    with t3:
+        if st.button("⚡ Crear Flashcards"):
+            p = f"5 flashcards JSON [{{'pregunta':'...', 'respuesta':'...'}}] de: {st.session_state['doc_text'][:15000]}"
+            st.session_state['flashcards'] = json.loads(clean_json(ask_gemini(p)))
+        
+        if 'flashcards' in st.session_state and st.session_state['flashcards']:
+            idx = st.session_state.get('fc_idx', 0)
+            card = st.session_state['flashcards'][idx]
+            st.info(f"Tarjeta {idx+1}")
             with st.container(border=True):
-                st.markdown(f"### {card['pregunta']}")
-                if st.checkbox("Ver respuesta", key=f"rev_{i}"): st.success(card['respuesta'])
-            c1, c2, c3 = st.columns([1,2,1])
-            if c1.button("⬅️") and i>0: 
-                st.session_state['current_card'] -= 1
+                st.subheader(card['pregunta'])
+                if st.checkbox("Ver respuesta", key=f"f_{idx}"): st.warning(card['respuesta'])
+            c1,c2 = st.columns(2)
+            if c1.button("Prev") and idx>0: 
+                st.session_state['fc_idx'] = idx-1
                 st.rerun()
-            if c3.button("➡️") and i<len(st.session_state['flashcards'])-1: 
-                st.session_state['current_card'] += 1
+            if c2.button("Next") and idx<len(st.session_state['flashcards'])-1: 
+                st.session_state['fc_idx'] = idx+1
                 st.rerun()
 
-    # 3. MAPA MENTAL
-    with tab3:
-        if st.button("🗺️ Ver Mapa"):
-            p = f"Crea código Graphviz DOT simple del texto: {st.session_state['doc_text'][:15000]}"
-            try: st.graphviz_chart(clean_json_text(ask_gemini(p)))
-            except: st.error("Error visualizando.")
+    # 4. MAPA
+    with t4:
+        if st.button("🗺️ Ver Estructura"):
+            p = f"Graphviz DOT code simple del texto: {st.session_state['doc_text'][:15000]}"
+            st.graphviz_chart(clean_json(ask_gemini(p)))
 
-    # 4. AUDIO
-    with tab4:
-        if st.button("🎧 Crear Podcast"):
-            p = f"Resumen estilo podcast de 150 palabras de: {st.session_state['doc_text'][:15000]}"
-            txt = ask_gemini(p)
-            st.write(txt)
-            tts = gTTS(txt, lang='es')
-            bio = BytesIO()
-            tts.write_to_fp(bio)
-            st.audio(bio, format='audio/mp3')
+    # 5. RECURSOS (NUEVO)
+    with t5:
+        st.header("Expandir Conocimiento")
+        st.write("La IA busca los mejores términos para complementar este PDF en YouTube.")
+        if st.button("🔍 Analizar Conceptos Clave"):
+            with st.spinner("Buscando conceptos..."):
+                p = f"""
+                Dime los 3 conceptos técnicos MÁS difíciles o importantes de este texto.
+                Solo dame los nombres, separados por comas.
+                Texto: {st.session_state['doc_text'][:10000]}
+                """
+                conceptos = ask_gemini(p).split(",")
+                
+                for concepto in conceptos:
+                    clean_c = concepto.strip()
+                    st.markdown(f"### 📺 {clean_c}")
+                    # Generar link de búsqueda de YouTube
+                    yt_url = f"https://www.youtube.com/results?search_query={clean_c.replace(' ', '+')}+tutorial"
+                    st.markdown(f"[Ver videos relacionados en YouTube]({yt_url})")
 
 else:
-    st.info("👈 Selecciona o sube un libro en la barra lateral para comenzar.")
+    st.info("👈 Selecciona un documento para empezar.")
