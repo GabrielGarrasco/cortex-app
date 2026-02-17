@@ -84,8 +84,15 @@ def clean_json(text):
     return text.replace("```json", "").replace("```", "").strip()
 
 def ask_gemini(prompt):
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    return model.generate_content(prompt).text
+    # CAMBIO IMPORTANTE: Usamos 'gemini-pro' que es el modelo más compatible
+    model = genai.GenerativeModel('gemini-pro') 
+    
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        # Esto evitará que la app se rompa si hay un error, mostrando un mensaje
+        return f"Error de IA: {str(e)}"
 
 # --- ESTADO ---
 if 'messages' not in st.session_state: st.session_state['messages'] = []
